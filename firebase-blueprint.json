@@ -28,6 +28,20 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "uid", "partnerId", "date", "amount", "service", "type", "commissionRate", "createdAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A payment received from a partner.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string", "description": "The user ID of the owner." },
+        "partnerId": { "type": "string", "description": "The ID of the partner who made the payment." },
+        "date": { "type": "string", "format": "date" },
+        "amount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "partnerId", "date", "amount", "createdAt"]
     }
   },
   "firestore": {
@@ -38,6 +52,10 @@
     "/transactions/{transactionId}": {
       "schema": "Transaction",
       "description": "Collection of user transactions."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Collection of payments received from partners."
     }
   }
 }

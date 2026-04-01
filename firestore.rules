@@ -39,6 +39,21 @@ service cloud.firestore {
       allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
     }
 
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && 
+                      request.resource.data.uid == request.auth.uid && 
+                      request.resource.data.amount is number && 
+                      request.resource.data.amount > 0 &&
+                      request.resource.data.keys().hasAll(['date', 'amount', 'uid', 'partnerId', 'createdAt']);
+      allow update: if isAuthenticated() && 
+                      resource.data.uid == request.auth.uid && 
+                      request.resource.data.uid == request.auth.uid &&
+                      request.resource.data.amount is number &&
+                      request.resource.data.amount > 0;
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+
     match /users/{userId} {
       allow read, write: if isOwner(userId);
     }

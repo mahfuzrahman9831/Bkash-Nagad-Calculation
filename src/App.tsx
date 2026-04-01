@@ -92,14 +92,71 @@ interface Partner {
   createdAt: any;
 }
 
+interface Payment {
+  id: string;
+  date: string;
+  amount: number;
+  uid: string;
+  partnerId: string;
+  createdAt: any;
+}
+
+const ConfirmationModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  title: string;
+  message: string;
+}> = ({ isOpen, onClose, onConfirm, title, message }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl animate-in fade-in zoom-in duration-200">
+        <h3 className="text-lg font-bold text-neutral-900 mb-2">{title}</h3>
+        <p className="text-neutral-600 mb-6">{message}</p>
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 rounded-lg border border-neutral-200 text-neutral-600 font-semibold hover:bg-neutral-50 transition-colors"
+          >
+            বাতিল
+          </button>
+          <button
+            onClick={() => {
+              onConfirm();
+              onClose();
+            }}
+            className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 transition-colors"
+          >
+            মুছে ফেলুন
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 function MainApp() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [selectedPartnerId, setSelectedPartnerId] = useState<string>('');
   const [newPartnerName, setNewPartnerName] = useState('');
   const [isAddingPartner, setIsAddingPartner] = useState(false);
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -107,6 +164,10 @@ function MainApp() {
     service: 'bKash' as const,
     type: 'Personal' as const,
     commissionRate: '5',
+  });
+  const [paymentFormData, setPaymentFormData] = useState({
+    date: format(new Date(), 'yyyy-MM-dd'),
+    amount: '',
   });
 
   useEffect(() => {
@@ -172,20 +233,58 @@ function MainApp() {
         id: doc.id,
       })) as Transaction[];
 
-      // Sort client-side: Primary by date (desc), secondary by createdAt (desc)
+      // Sort client-side: Absolute priority to entry time (createdAt)
       const sortedTxs = txs.sort((a, b) => {
-        if (a.date !== b.date) {
-          return b.date.localeCompare(a.date);
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Date.now() + 10000);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Date.now() + 10000);
+        
+        if (Math.abs(timeA - timeB) > 100) { // Significant difference in entry time
+          return timeB - timeA;
         }
-        // Handle serverTimestamp which might be null in local snapshot
-        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Date.now());
-        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Date.now());
-        return timeB - timeA;
+        
+        // If entry time is almost identical, sort by date descending
+        return b.date.localeCompare(a.date);
       });
 
       setTransactions(sortedTxs);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'transactions');
+    });
+
+    return () => unsubscribe();
+  }, [user, selectedPartnerId]);
+
+  useEffect(() => {
+    if (!user || !selectedPartnerId) {
+      setPayments([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, 'payments'), 
+      where('uid', '==', user.uid),
+      where('partnerId', '==', selectedPartnerId)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const pms = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+      })) as Payment[];
+
+      const sortedPms = pms.sort((a, b) => {
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : Date.now() + 10000);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : Date.now() + 10000);
+        
+        if (Math.abs(timeA - timeB) > 100) {
+          return timeB - timeA;
+        }
+        return b.date.localeCompare(a.date);
+      });
+
+      setPayments(sortedPms);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'payments');
     });
 
     return () => unsubscribe();
@@ -241,13 +340,18 @@ function MainApp() {
   };
 
   const deleteTransaction = async (id: string) => {
-    if (confirm('আপনি কি এই লেনদেনটি মুছে ফেলতে চান?')) {
-      try {
-        await deleteDoc(doc(db, 'transactions', id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `transactions/${id}`);
-      }
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'লেনদেন মুছুন',
+      message: 'আপনি কি এই লেনদেনটি মুছে ফেলতে চান?',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'transactions', id));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `transactions/${id}`);
+        }
+      },
+    });
   };
 
   const handleAddPartner = async (e: React.FormEvent) => {
@@ -270,37 +374,95 @@ function MainApp() {
   };
 
   const deletePartner = async (id: string) => {
-    if (confirm('আপনি কি এই পার্টনার এবং তার সকল লেনদেন মুছে ফেলতে চান?')) {
-      try {
-        // Delete partner
-        await deleteDoc(doc(db, 'partners', id));
-        
-        // Note: In a real app, you'd also delete all transactions for this partner.
-        // For simplicity here, we just delete the partner. 
-        // Firestore rules will prevent orphaned transactions from being read if filtered by partnerId.
-        
-        if (selectedPartnerId === id) {
-          setSelectedPartnerId(partners.find(p => p.id !== id)?.id || '');
+    setConfirmModal({
+      isOpen: true,
+      title: 'পার্টনার মুছুন',
+      message: 'আপনি কি এই পার্টনার এবং তার সকল লেনদেন মুছে ফেলতে চান?',
+      onConfirm: async () => {
+        try {
+          // Delete partner
+          await deleteDoc(doc(db, 'partners', id));
+          
+          if (selectedPartnerId === id) {
+            setSelectedPartnerId(partners.find(p => p.id !== id)?.id || '');
+          }
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `partners/${id}`);
         }
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `partners/${id}`);
-      }
+      },
+    });
+  };
+
+  const handleAddPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !selectedPartnerId || !paymentFormData.amount) return;
+
+    const paymentData = {
+      date: paymentFormData.date,
+      amount: parseFloat(paymentFormData.amount),
+      uid: user.uid,
+      partnerId: selectedPartnerId,
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      await addDoc(collection(db, 'payments'), paymentData);
+      setPaymentFormData({
+        ...paymentFormData,
+        amount: '',
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'payments');
     }
+  };
+
+  const deletePayment = async (id: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'পেমেন্ট মুছুন',
+      message: 'আপনি কি এই পেমেন্টটি মুছে ফেলতে চান?',
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'payments', id));
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `payments/${id}`);
+        }
+      },
+    });
   };
 
   const groupedTransactions = useMemo(() => {
     const groups: Record<string, Transaction[]> = {};
+    
+    // Transactions are already sorted by entry time (latest first)
     transactions.forEach(t => {
       if (!groups[t.date]) {
         groups[t.date] = [];
       }
       groups[t.date].push(t);
     });
-    return groups;
+    
+    // We want the groups themselves to be ordered by the LATEST entry within them
+    const sortedDates = Object.keys(groups).sort((a, b) => {
+      const latestA = groups[a][0].createdAt?.toMillis ? groups[a][0].createdAt.toMillis() : Date.now();
+      const latestB = groups[b][0].createdAt?.toMillis ? groups[b][0].createdAt.toMillis() : Date.now();
+      
+      if (Math.abs(latestA - latestB) > 100) {
+        return latestB - latestA;
+      }
+      return b.localeCompare(a);
+    });
+
+    const sortedGroups: Record<string, Transaction[]> = {};
+    sortedDates.forEach(date => {
+      sortedGroups[date] = groups[date];
+    });
+      
+    return sortedGroups;
   }, [transactions]);
 
   const totals = useMemo(() => {
-    return transactions.reduce(
+    const tTotals = transactions.reduce(
       (acc, t) => {
         const commission = (t.amount / 1000) * t.commissionRate;
         return {
@@ -310,7 +472,15 @@ function MainApp() {
       },
       { totalAmount: 0, totalCommission: 0 }
     );
-  }, [transactions]);
+
+    const totalReceived = payments.reduce((acc, p) => acc + p.amount, 0);
+
+    return {
+      ...tTotals,
+      totalReceived,
+      balance: (tTotals.totalAmount + tTotals.totalCommission) - totalReceived,
+    };
+  }, [transactions, payments]);
 
   if (loading) {
     return (
@@ -388,6 +558,14 @@ function MainApp() {
             <LogOut className="w-4 h-4" /> লগআউট
           </button>
         </header>
+
+        <ConfirmationModal
+          isOpen={confirmModal.isOpen}
+          onClose={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+          onConfirm={confirmModal.onConfirm}
+          title={confirmModal.title}
+          message={confirmModal.message}
+        />
 
         {/* Partner Selection */}
         <section className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-6 space-y-4">
@@ -539,6 +717,47 @@ function MainApp() {
               </button>
             </div>
           </form>
+
+          <div className="mt-8 pt-8 border-t border-neutral-100">
+            <h3 className="font-bold text-neutral-700 mb-4 flex items-center gap-2">
+              <Plus className="w-5 h-5 text-green-600" /> জমা পাওয়া টাকা (Received Amount) যোগ করুন
+            </h3>
+            <form onSubmit={handleAddPayment} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 flex items-center gap-1">
+                  <Calendar className="w-3 h-3" /> তারিখ
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={paymentFormData.date}
+                  onChange={e => setPaymentFormData({ ...paymentFormData, date: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 flex items-center gap-1">
+                  টাকার পরিমাণ
+                </label>
+                <input
+                  type="number"
+                  required
+                  placeholder="যেমন: ৫০০০"
+                  value={paymentFormData.amount}
+                  onChange={e => setPaymentFormData({ ...paymentFormData, amount: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none transition-all"
+                />
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="submit"
+                  className="w-full bg-green-600 text-white py-2 rounded-lg font-bold hover:bg-green-700 transition-colors flex items-center justify-center gap-2 shadow-md"
+                >
+                  <Plus className="w-4 h-4" /> জমা যোগ করুন
+                </button>
+              </div>
+            </form>
+          </div>
         </section>
         ) : (
           <div className="bg-pink-50 p-8 rounded-2xl border border-pink-100 text-center space-y-2">
@@ -548,99 +767,181 @@ function MainApp() {
         )}
 
         {/* Summary Cards */}
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500">মোট লেনদেন</p>
-              <p className="text-2xl font-bold text-neutral-900">৳ {totals.totalAmount.toLocaleString()}</p>
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between overflow-hidden min-h-[140px]">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold uppercase tracking-wider text-neutral-500 mb-1">মোট লেনদেন</p>
+              <p className="text-2xl sm:text-3xl md:text-4xl font-bold text-neutral-900 break-words leading-tight">
+                ৳ {totals.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+              </p>
             </div>
-            <div className="bg-blue-50 p-3 rounded-full">
-              <CreditCard className="w-6 h-6 text-blue-600" />
+            <div className="bg-blue-50 p-5 rounded-full flex-shrink-0 ml-6">
+              <CreditCard className="w-10 h-10 text-blue-600" />
             </div>
           </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-neutral-500">মোট কমিশন</p>
-              <p className="text-2xl font-bold text-pink-600">৳ {totals.totalCommission.toLocaleString()}</p>
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between overflow-hidden min-h-[140px]">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold uppercase tracking-wider text-neutral-500 mb-1">মোট কমিশন</p>
+              <p className="text-2xl sm:text-3xl md:text-4xl font-bold text-pink-600 break-words leading-tight">
+                ৳ {totals.totalCommission.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 3 })}
+              </p>
             </div>
-            <div className="bg-pink-50 p-3 rounded-full">
-              <Calculator className="w-6 h-6 text-pink-600" />
+            <div className="bg-pink-50 p-5 rounded-full flex-shrink-0 ml-6">
+              <Calculator className="w-10 h-10 text-pink-600" />
+            </div>
+          </div>
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between overflow-hidden min-h-[140px]">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold uppercase tracking-wider text-neutral-500 mb-1">জমা পাওয়া গেছে</p>
+              <p className="text-2xl sm:text-3xl md:text-4xl font-bold text-green-600 break-words leading-tight">
+                ৳ {totals.totalReceived.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="bg-green-50 p-5 rounded-full flex-shrink-0 ml-6">
+              <Plus className="w-10 h-10 text-green-600" />
+            </div>
+          </div>
+          <div className="bg-white p-8 rounded-2xl shadow-sm border border-neutral-200 flex items-center justify-between overflow-hidden min-h-[140px]">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold uppercase tracking-wider text-neutral-500 mb-1">বাকি (Balance)</p>
+              <p className={cn(
+                "text-2xl sm:text-3xl md:text-4xl font-bold break-words leading-tight",
+                totals.balance > 0 ? "text-red-600" : "text-blue-600"
+              )}>
+                ৳ {totals.balance.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 3 })}
+              </p>
+            </div>
+            <div className={cn(
+              "p-5 rounded-full flex-shrink-0 ml-6",
+              totals.balance > 0 ? "bg-red-50" : "bg-blue-50"
+            )}>
+              <History className={cn(
+                "w-10 h-10",
+                totals.balance > 0 ? "text-red-600" : "text-blue-600"
+              )} />
             </div>
           </div>
         </section>
 
-        {/* Transaction History */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <History className="w-5 h-5" /> লেনদেনের ইতিহাস
-            </h2>
-          </div>
-
-          {Object.keys(groupedTransactions).length === 0 ? (
-            <div className="bg-white p-12 rounded-2xl border border-dashed border-neutral-300 text-center space-y-2">
-              <p className="text-neutral-400">এখনো কোনো লেনদেন যোগ করা হয়নি।</p>
+        {/* Histories */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Transaction History */}
+          <section className="lg:col-span-2 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <History className="w-5 h-5" /> লেনদেনের ইতিহাস
+              </h2>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {Object.entries(groupedTransactions).map(([date, items]) => (
-                <div key={date} className="space-y-2">
-                  <div className="flex items-center gap-2 px-2">
-                    <span className="text-sm font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded">
-                      {format(parseISO(date), 'dd MMMM, yyyy')}
-                    </span>
-                    <div className="h-px flex-1 bg-neutral-200"></div>
-                  </div>
-                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse min-w-[600px]">
-                        <thead>
-                          <tr className="bg-neutral-50 border-b border-neutral-200">
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">সার্ভিস</th>
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">টাইপ</th>
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">পরিমাণ</th>
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">হার (১০০০)</th>
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">কমিশন</th>
-                            <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500 text-right">অ্যাকশন</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-100">
-                          {(items as Transaction[]).map(t => {
-                            const commission = (t.amount / 1000) * t.commissionRate;
-                            return (
-                              <tr key={t.id} className="hover:bg-neutral-50 transition-colors">
-                                <td className="px-4 py-3">
-                                  <span className={cn(
-                                    "text-xs font-bold px-2 py-1 rounded",
-                                    t.service === 'bKash' ? "bg-pink-100 text-pink-700" : "bg-orange-100 text-orange-700"
-                                  )}>
-                                    {t.service}
-                                  </span>
-                                </td>
-                                <td className="px-4 py-3 text-sm text-neutral-600">{t.type}</td>
-                                <td className="px-4 py-3 text-sm font-bold">৳ {t.amount.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-sm text-neutral-500">{t.commissionRate}</td>
-                                <td className="px-4 py-3 text-sm font-bold text-pink-600">৳ {commission.toLocaleString()}</td>
-                                <td className="px-4 py-3 text-right">
-                                  <button
-                                    onClick={() => deleteTransaction(t.id)}
-                                    className="p-1 text-neutral-400 hover:text-red-500 transition-colors"
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+
+            {Object.keys(groupedTransactions).length === 0 ? (
+              <div className="bg-white p-12 rounded-2xl border border-dashed border-neutral-300 text-center space-y-2">
+                <p className="text-neutral-400">এখনো কোনো লেনদেন যোগ করা হয়নি।</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {Object.entries(groupedTransactions).map(([date, items]) => (
+                  <div key={date} className="space-y-2">
+                    <div className="flex items-center gap-2 px-2">
+                      <span className="text-sm font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded">
+                        {format(parseISO(date), 'dd MMMM, yyyy')}
+                      </span>
+                      <div className="h-px flex-1 bg-neutral-200"></div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse min-w-[600px]">
+                          <thead>
+                            <tr className="bg-neutral-50 border-b border-neutral-200">
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">সার্ভিস</th>
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">টাইপ</th>
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">পরিমাণ</th>
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">হার (১০০০)</th>
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">কমিশন</th>
+                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500 text-right">অ্যাকশন</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-100">
+                            {(items as Transaction[]).map(t => {
+                              const commission = (t.amount / 1000) * t.commissionRate;
+                              return (
+                                <tr key={t.id} className="hover:bg-neutral-50 transition-colors">
+                                  <td className="px-4 py-3">
+                                    <span className={cn(
+                                      "text-xs font-bold px-2 py-1 rounded",
+                                      t.service === 'bKash' ? "bg-pink-100 text-pink-700" : "bg-orange-100 text-orange-700"
+                                    )}>
+                                      {t.service}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-sm text-neutral-600">{t.type}</td>
+                                  <td className="px-4 py-3 text-sm font-bold">৳ {t.amount.toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-sm text-neutral-500">{t.commissionRate}</td>
+                                  <td className="px-4 py-3 text-sm font-bold text-pink-600">৳ {commission.toLocaleString()}</td>
+                                  <td className="px-4 py-3 text-right">
+                                    <button
+                                      onClick={() => deleteTransaction(t.id)}
+                                      className="p-1 text-neutral-400 hover:text-red-500 transition-colors"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Payment History */}
+          <section className="space-y-4">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Plus className="w-5 h-5 text-green-600" /> জমার ইতিহাস
+            </h2>
+            <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
+              {payments.length === 0 ? (
+                <div className="p-8 text-center text-neutral-400 italic text-sm">
+                  কোনো জমা রেকর্ড করা হয়নি।
                 </div>
-              ))}
+              ) : (
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-neutral-50 border-b border-neutral-200">
+                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">তারিখ</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">পরিমাণ</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500 text-right"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {payments.map(p => (
+                      <tr key={p.id} className="hover:bg-neutral-50 transition-colors">
+                        <td className="px-4 py-3 text-sm text-neutral-600">
+                          {format(parseISO(p.date), 'dd MMM, yy')}
+                        </td>
+                        <td className="px-4 py-3 text-sm font-bold text-green-600">
+                          ৳ {p.amount.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => deletePayment(p.id)}
+                            className="p-1 text-neutral-400 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-          )}
-        </section>
+          </section>
+        </div>
       </div>
     </div>
   );
