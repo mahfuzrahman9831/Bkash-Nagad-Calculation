@@ -478,7 +478,7 @@ function MainApp() {
     return {
       ...tTotals,
       totalReceived,
-      balance: (tTotals.totalAmount + tTotals.totalCommission) - totalReceived,
+      balance: tTotals.totalAmount - totalReceived,
     };
   }, [transactions, payments]);
 
