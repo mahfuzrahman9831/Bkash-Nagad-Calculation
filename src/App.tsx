@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo, Component } from 'react';
-import { Plus, Trash2, Calendar, CreditCard, User, Calculator, History, Trash, LogIn, LogOut, AlertCircle } from 'lucide-react';
+import { Plus, Trash2, Calendar, CreditCard, User, Calculator, History, Trash, LogIn, LogOut, AlertCircle, Settings2 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -20,6 +20,7 @@ import {
 import { 
   collection, 
   addDoc, 
+  updateDoc,
   query, 
   where, 
   onSnapshot, 
@@ -80,6 +81,7 @@ interface Transaction {
   service: 'bKash' | 'Nagad';
   type: 'Personal' | 'Agent';
   commissionRate: number; // Rate per 1000
+  note?: string;
   uid: string;
   partnerId: string;
   createdAt: any;
@@ -90,12 +92,19 @@ interface Partner {
   name: string;
   uid: string;
   createdAt: any;
+  rates?: {
+    bKashPersonal?: number;
+    bKashAgent?: number;
+    NagadPersonal?: number;
+    NagadAgent?: number;
+  };
 }
 
 interface Payment {
   id: string;
   date: string;
   amount: number;
+  note?: string;
   uid: string;
   partnerId: string;
   createdAt: any;
@@ -145,7 +154,14 @@ function MainApp() {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [selectedPartnerId, setSelectedPartnerId] = useState<string>('');
   const [newPartnerName, setNewPartnerName] = useState('');
+  const [partnerRates, setPartnerRates] = useState({
+    bKashPersonal: '5',
+    bKashAgent: '2',
+    NagadPersonal: '5',
+    NagadAgent: '2',
+  });
   const [isAddingPartner, setIsAddingPartner] = useState(false);
+  const [editingPartnerId, setEditingPartnerId] = useState<string | null>(null);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -164,10 +180,12 @@ function MainApp() {
     service: 'bKash' as const,
     type: 'Personal' as const,
     commissionRate: '5',
+    note: '',
   });
   const [paymentFormData, setPaymentFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     amount: '',
+    note: '',
   });
 
   useEffect(() => {
@@ -290,6 +308,19 @@ function MainApp() {
     return () => unsubscribe();
   }, [user, selectedPartnerId]);
 
+  // Auto-fill commission rate when partner, service or type changes
+  useEffect(() => {
+    if (!selectedPartnerId) return;
+    const partner = partners.find(p => p.id === selectedPartnerId);
+    if (!partner?.rates) return;
+
+    const key = `${formData.service}${formData.type}` as keyof NonNullable<Partner['rates']>;
+    const rate = partner.rates[key];
+    if (rate !== undefined) {
+      setFormData(prev => ({ ...prev, commissionRate: rate.toString() }));
+    }
+  }, [selectedPartnerId, formData.service, formData.type, partners]);
+
   const handleLogin = async (useRedirect = false) => {
     const provider = new GoogleAuthProvider();
     setLoginError(null);
@@ -323,6 +354,7 @@ function MainApp() {
       service: formData.service,
       type: formData.type,
       commissionRate: parseFloat(formData.commissionRate),
+      note: formData.note.trim() || null,
       uid: user.uid,
       partnerId: selectedPartnerId,
       createdAt: serverTimestamp(),
@@ -333,6 +365,7 @@ function MainApp() {
       setFormData({
         ...formData,
         amount: '',
+        note: '',
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'transactions');
@@ -363,9 +396,21 @@ function MainApp() {
         name: newPartnerName.trim(),
         uid: user.uid,
         createdAt: serverTimestamp(),
+        rates: {
+          bKashPersonal: parseFloat(partnerRates.bKashPersonal) || 0,
+          bKashAgent: parseFloat(partnerRates.bKashAgent) || 0,
+          NagadPersonal: parseFloat(partnerRates.NagadPersonal) || 0,
+          NagadAgent: parseFloat(partnerRates.NagadAgent) || 0,
+        }
       };
       const docRef = await addDoc(collection(db, 'partners'), partnerData);
       setNewPartnerName('');
+      setPartnerRates({
+        bKashPersonal: '5',
+        bKashAgent: '2',
+        NagadPersonal: '5',
+        NagadAgent: '2',
+      });
       setIsAddingPartner(false);
       setSelectedPartnerId(docRef.id);
     } catch (error) {
@@ -400,6 +445,7 @@ function MainApp() {
     const paymentData = {
       date: paymentFormData.date,
       amount: parseFloat(paymentFormData.amount),
+      note: paymentFormData.note.trim() || null,
       uid: user.uid,
       partnerId: selectedPartnerId,
       createdAt: serverTimestamp(),
@@ -410,6 +456,7 @@ function MainApp() {
       setPaymentFormData({
         ...paymentFormData,
         amount: '',
+        note: '',
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'payments');
@@ -431,35 +478,78 @@ function MainApp() {
     });
   };
 
-  const groupedTransactions = useMemo(() => {
-    const groups: Record<string, Transaction[]> = {};
+  const handleUpdatePartnerRates = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !editingPartnerId) return;
+
+    try {
+      const partnerRef = doc(db, 'partners', editingPartnerId);
+      await updateDoc(partnerRef, {
+        rates: {
+          bKashPersonal: parseFloat(partnerRates.bKashPersonal) || 0,
+          bKashAgent: parseFloat(partnerRates.bKashAgent) || 0,
+          NagadPersonal: parseFloat(partnerRates.NagadPersonal) || 0,
+          NagadAgent: parseFloat(partnerRates.NagadAgent) || 0,
+        }
+      });
+      setEditingPartnerId(null);
+      setPartnerRates({
+        bKashPersonal: '5',
+        bKashAgent: '2',
+        NagadPersonal: '5',
+        NagadAgent: '2',
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `partners/${editingPartnerId}`);
+    }
+  };
+
+  const startEditingPartnerRates = (partner: Partner) => {
+    setPartnerRates({
+      bKashPersonal: (partner.rates?.bKashPersonal ?? 5).toString(),
+      bKashAgent: (partner.rates?.bKashAgent ?? 2).toString(),
+      NagadPersonal: (partner.rates?.NagadPersonal ?? 5).toString(),
+      NagadAgent: (partner.rates?.NagadAgent ?? 2).toString(),
+    });
+    setEditingPartnerId(partner.id);
+    setIsAddingPartner(false);
+  };
+
+  const groupedHistory = useMemo(() => {
+    const groups: Record<string, { transactions: Transaction[], payments: Payment[] }> = {};
     
-    // Transactions are already sorted by entry time (latest first)
     transactions.forEach(t => {
-      if (!groups[t.date]) {
-        groups[t.date] = [];
-      }
-      groups[t.date].push(t);
+      if (!groups[t.date]) groups[t.date] = { transactions: [], payments: [] };
+      groups[t.date].transactions.push(t);
     });
     
-    // We want the groups themselves to be ordered by the LATEST entry within them
+    payments.forEach(p => {
+      if (!groups[p.date]) groups[p.date] = { transactions: [], payments: [] };
+      groups[p.date].payments.push(p);
+    });
+    
     const sortedDates = Object.keys(groups).sort((a, b) => {
-      const latestA = groups[a][0].createdAt?.toMillis ? groups[a][0].createdAt.toMillis() : Date.now();
-      const latestB = groups[b][0].createdAt?.toMillis ? groups[b][0].createdAt.toMillis() : Date.now();
+      // Find latest entry time for each date to keep newest dates at top
+      const getLatestTime = (date: string) => {
+        const txTime = groups[date].transactions[0]?.createdAt?.toMillis() || 0;
+        const pmTime = groups[date].payments[0]?.createdAt?.toMillis() || 0;
+        return Math.max(txTime, pmTime);
+      };
       
-      if (Math.abs(latestA - latestB) > 100) {
-        return latestB - latestA;
-      }
+      const timeA = getLatestTime(a);
+      const timeB = getLatestTime(b);
+      
+      if (Math.abs(timeA - timeB) > 100) return timeB - timeA;
       return b.localeCompare(a);
     });
 
-    const sortedGroups: Record<string, Transaction[]> = {};
+    const sortedGroups: Record<string, { transactions: Transaction[], payments: Payment[] }> = {};
     sortedDates.forEach(date => {
       sortedGroups[date] = groups[date];
     });
       
     return sortedGroups;
-  }, [transactions]);
+  }, [transactions, payments]);
 
   const totals = useMemo(() => {
     const tTotals = transactions.reduce(
@@ -582,21 +672,144 @@ function MainApp() {
           </div>
 
           {isAddingPartner && (
-            <form onSubmit={handleAddPartner} className="flex gap-2 animate-in fade-in slide-in-from-top-2">
-              <input
-                type="text"
-                required
-                placeholder="পার্টনারের নাম"
-                value={newPartnerName}
-                onChange={e => setNewPartnerName(e.target.value)}
-                className="flex-1 px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
-              />
-              <button
-                type="submit"
-                className="bg-pink-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-pink-700 transition-colors"
-              >
-                যোগ করুন
-              </button>
+            <form onSubmit={handleAddPartner} className="bg-neutral-50 p-4 rounded-xl space-y-4 animate-in fade-in slide-in-from-top-2">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500">পার্টনারের নাম</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="যেমন: রহিম স্টোর"
+                  value={newPartnerName}
+                  onChange={e => setNewPartnerName(e.target.value)}
+                  className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                />
+              </div>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">বিকাশ পার্সোনাল</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.bKashPersonal}
+                    onChange={e => setPartnerRates({...partnerRates, bKashPersonal: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">বিকাশ এজেন্ট</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.bKashAgent}
+                    onChange={e => setPartnerRates({...partnerRates, bKashAgent: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">নগদ পার্সোনাল</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.NagadPersonal}
+                    onChange={e => setPartnerRates({...partnerRates, NagadPersonal: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">নগদ এজেন্ট</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.NagadAgent}
+                    onChange={e => setPartnerRates({...partnerRates, NagadAgent: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsAddingPartner(false)}
+                  className="px-4 py-2 rounded-lg font-bold text-neutral-500 hover:bg-neutral-100 transition-colors"
+                >
+                  বাতিল
+                </button>
+                <button
+                  type="submit"
+                  className="bg-pink-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-pink-700 transition-colors"
+                >
+                  যোগ করুন
+                </button>
+              </div>
+            </form>
+          )}
+
+          {editingPartnerId && (
+            <form onSubmit={handleUpdatePartnerRates} className="bg-neutral-50 p-4 rounded-xl space-y-4 animate-in fade-in slide-in-from-top-2 border-2 border-pink-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-bold text-neutral-700">কমিশন রেট আপডেট করুন: <span className="text-pink-600">{partners.find(p => p.id === editingPartnerId)?.name}</span></h3>
+              </div>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">বিকাশ পার্সোনাল</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.bKashPersonal}
+                    onChange={e => setPartnerRates({...partnerRates, bKashPersonal: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">বিকাশ এজেন্ট</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.bKashAgent}
+                    onChange={e => setPartnerRates({...partnerRates, bKashAgent: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">নগদ পার্সোনাল</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.NagadPersonal}
+                    onChange={e => setPartnerRates({...partnerRates, NagadPersonal: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">নগদ এজেন্ট</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={partnerRates.NagadAgent}
+                    onChange={e => setPartnerRates({...partnerRates, NagadAgent: e.target.value})}
+                    className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setEditingPartnerId(null)}
+                  className="px-4 py-2 rounded-lg font-bold text-neutral-500 hover:bg-neutral-100 transition-colors"
+                >
+                  বাতিল
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 transition-colors"
+                >
+                  আপডেট করুন
+                </button>
+              </div>
             </form>
           )}
 
@@ -609,7 +822,7 @@ function MainApp() {
                   <button
                     onClick={() => setSelectedPartnerId(p.id)}
                     className={cn(
-                      "px-4 py-2 rounded-full text-sm font-bold transition-all border",
+                      "px-4 py-2 rounded-full text-sm font-bold transition-all border outline-none",
                       selectedPartnerId === p.id 
                         ? "bg-pink-600 border-pink-600 text-white shadow-md" 
                         : "bg-white border-neutral-200 text-neutral-600 hover:border-pink-300"
@@ -617,12 +830,22 @@ function MainApp() {
                   >
                     {p.name}
                   </button>
-                  <button 
-                    onClick={() => deletePartner(p.id)}
-                    className="absolute -top-1 -right-1 bg-white text-neutral-400 hover:text-red-500 rounded-full p-0.5 shadow-sm border border-neutral-100 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Trash className="w-3 h-3" />
-                  </button>
+                  <div className="absolute -top-2 -right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={() => startEditingPartnerRates(p)}
+                      className="bg-white text-blue-500 hover:text-blue-600 rounded-full p-1 shadow-md border border-neutral-100"
+                      title="কমিশন রেট আপডেট করুন"
+                    >
+                      <Settings2 className="w-3 h-3" />
+                    </button>
+                    <button 
+                      onClick={() => deletePartner(p.id)}
+                      className="bg-white text-neutral-400 hover:text-red-500 rounded-full p-1 shadow-md border border-neutral-100"
+                      title="মুছে ফেলুন"
+                    >
+                      <Trash className="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
               ))
             )}
@@ -708,7 +931,20 @@ function MainApp() {
               />
             </div>
 
-            <div className="flex items-end">
+            <div className="space-y-1 lg:col-span-1">
+              <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 flex items-center gap-1">
+                নোট (ঐচ্ছিক)
+              </label>
+              <input
+                type="text"
+                placeholder="যেমন: ক্যাশ / জরুরি"
+                value={formData.note}
+                onChange={e => setFormData({ ...formData, note: e.target.value })}
+                className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 focus:border-transparent outline-none transition-all"
+              />
+            </div>
+
+            <div className="flex items-end lg:col-span-1">
               <button
                 type="submit"
                 className="w-full bg-pink-600 hover:bg-pink-700 text-white font-bold py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-md"
@@ -745,6 +981,18 @@ function MainApp() {
                   placeholder="যেমন: ৫০০০"
                   value={paymentFormData.amount}
                   onChange={e => setPaymentFormData({ ...paymentFormData, amount: e.target.value })}
+                  className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none transition-all"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-semibold uppercase tracking-wider text-neutral-500 flex items-center gap-1">
+                  নোট (ঐচ্ছিক)
+                </label>
+                <input
+                  type="text"
+                  placeholder="যেমন: ব্যাংক / বিটুবি"
+                  value={paymentFormData.note}
+                  onChange={e => setPaymentFormData({ ...paymentFormData, note: e.target.value })}
                   className="w-full px-4 py-2 rounded-lg border border-neutral-200 focus:ring-2 focus:ring-pink-500 outline-none transition-all"
                 />
               </div>
@@ -823,125 +1071,156 @@ function MainApp() {
           </div>
         </section>
 
-        {/* Histories */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Transaction History */}
-          <section className="lg:col-span-2 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold flex items-center gap-2">
-                <History className="w-5 h-5" /> লেনদেনের ইতিহাস
-              </h2>
-            </div>
+        {/* History Flow */}
+        <section className="space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <h2 className="text-2xl font-bold flex items-center gap-2">
+              <History className="w-6 h-6 text-neutral-700" /> বিস্তারিত ইতিহাস (Transactions & Payments)
+            </h2>
+          </div>
 
-            {Object.keys(groupedTransactions).length === 0 ? (
-              <div className="bg-white p-12 rounded-2xl border border-dashed border-neutral-300 text-center space-y-2">
-                <p className="text-neutral-400">এখনো কোনো লেনদেন যোগ করা হয়নি।</p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                {Object.entries(groupedTransactions).map(([date, items]) => (
-                  <div key={date} className="space-y-2">
-                    <div className="flex items-center gap-2 px-2">
-                      <span className="text-sm font-bold text-neutral-500 bg-neutral-200 px-2 py-0.5 rounded">
-                        {format(parseISO(date), 'dd MMMM, yyyy')}
-                      </span>
-                      <div className="h-px flex-1 bg-neutral-200"></div>
+          {Object.keys(groupedHistory).length === 0 ? (
+            <div className="bg-white p-20 rounded-3xl border border-dashed border-neutral-300 text-center space-y-3">
+              <History className="w-12 h-12 text-neutral-200 mx-auto" />
+              <p className="text-neutral-400 font-medium">এখনো কোনো এন্ট্রি পাওয়া যায়নি।</p>
+            </div>
+          ) : (
+            <div className="space-y-10">
+              {Object.entries(groupedHistory).map(([date, entry]) => {
+                const { transactions: dayTxs, payments: dayPms } = entry as { transactions: Transaction[], payments: Payment[] };
+                return (
+                  <div key={date} className="space-y-4">
+                  <div className="sticky top-0 z-10 flex items-center gap-3 py-2 bg-neutral-100/80 backdrop-blur-sm">
+                    <span className="text-base font-black text-neutral-600 bg-white px-4 py-1 rounded-full shadow-sm border border-neutral-200">
+                      {format(parseISO(date), 'dd MMMM, yyyy')}
+                    </span>
+                    <div className="h-px flex-1 bg-neutral-300"></div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+                    {/* Transactions for this date */}
+                    <div className="xl:col-span-2 space-y-2">
+                      <div className="flex items-center gap-2 mb-1 px-1">
+                        <CreditCard className="w-4 h-4 text-pink-500" />
+                        <h3 className="text-sm font-bold text-neutral-600 uppercase tracking-wider">লেনদেনের তালিকা</h3>
+                        <span className="text-[10px] bg-pink-100 text-pink-700 px-2 rounded-full font-bold">
+                          {dayTxs.length} এন্ট্রি
+                        </span>
+                      </div>
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
+                        {dayTxs.length === 0 ? (
+                          <div className="p-6 text-center text-neutral-400 italic text-xs">কোনো লেনদেন নেই।</div>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse min-w-[500px]">
+                              <thead>
+                                <tr className="bg-neutral-50 border-b border-neutral-200">
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">সার্ভিস</th>
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">টাইপ</th>
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">পরিমাণ</th>
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">কমিশন</th>
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">নোট</th>
+                                  <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400 text-right"></th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-neutral-100">
+                                {dayTxs.map(t => {
+                                  const commission = (t.amount / 1000) * t.commissionRate;
+                                  return (
+                                    <tr key={t.id} className="hover:bg-neutral-50 transition-colors">
+                                      <td className="px-4 py-3">
+                                        <span className={cn(
+                                          "text-[10px] font-black px-2 py-0.5 rounded uppercase",
+                                          t.service === 'bKash' ? "bg-pink-100 text-pink-700" : "bg-orange-100 text-orange-700"
+                                        )}>
+                                          {t.service}
+                                        </span>
+                                      </td>
+                                      <td className="px-4 py-3 text-xs text-neutral-600">{t.type}</td>
+                                      <td className="px-4 py-3 text-sm font-black text-neutral-800">৳ {t.amount.toLocaleString()}</td>
+                                      <td className="px-4 py-3">
+                                        <div className="flex flex-col">
+                                          <span className="text-sm font-black text-pink-600">৳ {commission.toLocaleString()}</span>
+                                          <span className="text-[10px] text-neutral-400">@{t.commissionRate}</span>
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <div className="text-[10px] text-neutral-400 max-w-[80px] break-words line-clamp-1" title={t.note}>
+                                          {t.note || '-'}
+                                        </div>
+                                      </td>
+                                      <td className="px-4 py-3 text-right">
+                                        <button
+                                          onClick={() => deleteTransaction(t.id)}
+                                          className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left border-collapse min-w-[600px]">
-                          <thead>
-                            <tr className="bg-neutral-50 border-b border-neutral-200">
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">সার্ভিস</th>
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">টাইপ</th>
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">পরিমাণ</th>
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">হার (১০০০)</th>
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">কমিশন</th>
-                              <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500 text-right">অ্যাকশন</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-neutral-100">
-                            {(items as Transaction[]).map(t => {
-                              const commission = (t.amount / 1000) * t.commissionRate;
-                              return (
-                                <tr key={t.id} className="hover:bg-neutral-50 transition-colors">
-                                  <td className="px-4 py-3">
-                                    <span className={cn(
-                                      "text-xs font-bold px-2 py-1 rounded",
-                                      t.service === 'bKash' ? "bg-pink-100 text-pink-700" : "bg-orange-100 text-orange-700"
-                                    )}>
-                                      {t.service}
-                                    </span>
+
+                    {/* Payments for this date */}
+                    <div className="xl:col-span-1 space-y-2">
+                       <div className="flex items-center gap-2 mb-1 px-1">
+                        <Plus className="w-4 h-4 text-green-500" />
+                        <h3 className="text-sm font-bold text-neutral-600 uppercase tracking-wider">জমার তালিকা</h3>
+                        <span className="text-[10px] bg-green-100 text-green-700 px-2 rounded-full font-bold">
+                          {dayPms.length} এন্ট্রি
+                        </span>
+                      </div>
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
+                        {dayPms.length === 0 ? (
+                          <div className="p-6 text-center text-neutral-400 italic text-xs">কোনো জমা নেই।</div>
+                        ) : (
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-neutral-50 border-b border-neutral-200">
+                                <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">পরিমাণ</th>
+                                <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400">নোট</th>
+                                <th className="px-4 py-3 text-[10px] font-bold uppercase text-neutral-400 text-right"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-neutral-100">
+                              {dayPms.map(p => (
+                                <tr key={p.id} className="hover:bg-neutral-50 transition-colors">
+                                  <td className="px-4 py-3 text-sm font-black text-green-600">
+                                    ৳ {p.amount.toLocaleString()}
                                   </td>
-                                  <td className="px-4 py-3 text-sm text-neutral-600">{t.type}</td>
-                                  <td className="px-4 py-3 text-sm font-bold">৳ {t.amount.toLocaleString()}</td>
-                                  <td className="px-4 py-3 text-sm text-neutral-500">{t.commissionRate}</td>
-                                  <td className="px-4 py-3 text-sm font-bold text-pink-600">৳ {commission.toLocaleString()}</td>
+                                  <td className="px-4 py-3">
+                                    <div className="text-[10px] text-neutral-400 max-w-[80px] break-words line-clamp-1" title={p.note}>
+                                      {p.note || '-'}
+                                    </div>
+                                  </td>
                                   <td className="px-4 py-3 text-right">
                                     <button
-                                      onClick={() => deleteTransaction(t.id)}
-                                      className="p-1 text-neutral-400 hover:text-red-500 transition-colors"
+                                      onClick={() => deletePayment(p.id)}
+                                      className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
                                     >
                                       <Trash2 className="w-4 h-4" />
                                     </button>
                                   </td>
                                 </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Payment History */}
-          <section className="space-y-4">
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <Plus className="w-5 h-5 text-green-600" /> জমার ইতিহাস
-            </h2>
-            <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
-              {payments.length === 0 ? (
-                <div className="p-8 text-center text-neutral-400 italic text-sm">
-                  কোনো জমা রেকর্ড করা হয়নি।
                 </div>
-              ) : (
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-neutral-50 border-b border-neutral-200">
-                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">তারিখ</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500">পরিমাণ</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase text-neutral-500 text-right"></th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100">
-                    {payments.map(p => (
-                      <tr key={p.id} className="hover:bg-neutral-50 transition-colors">
-                        <td className="px-4 py-3 text-sm text-neutral-600">
-                          {format(parseISO(p.date), 'dd MMM, yy')}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-bold text-green-600">
-                          ৳ {p.amount.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => deletePayment(p.id)}
-                            className="p-1 text-neutral-400 hover:text-red-500 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+              );
+            })}
             </div>
-          </section>
-        </div>
+          )}
+        </section>
       </div>
     </div>
   );

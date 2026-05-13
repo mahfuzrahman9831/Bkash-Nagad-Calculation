@@ -2,13 +2,22 @@
   "entities": {
     "Partner": {
       "title": "Partner",
-      "description": "A business partner.",
+      "description": "A business partner with direct commission rate presets.",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "uid": { "type": "string", "description": "The user ID of the owner." },
         "name": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "rates": {
+          "type": "object",
+          "properties": {
+            "bKashPersonal": { "type": "number" },
+            "bKashAgent": { "type": "number" },
+            "NagadPersonal": { "type": "number" },
+            "NagadAgent": { "type": "number" }
+          }
+        }
       },
       "required": ["id", "uid", "name", "createdAt"]
     },
@@ -25,7 +34,8 @@
         "service": { "type": "string", "enum": ["bKash", "Nagad"] },
         "type": { "type": "string", "enum": ["Personal", "Agent"] },
         "commissionRate": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "note": { "type": "string", "description": "Optional note about the transaction." }
       },
       "required": ["id", "uid", "partnerId", "date", "amount", "service", "type", "commissionRate", "createdAt"]
     },
@@ -39,7 +49,8 @@
         "partnerId": { "type": "string", "description": "The ID of the partner who made the payment." },
         "date": { "type": "string", "format": "date" },
         "amount": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "note": { "type": "string", "description": "Optional note about the payment source." }
       },
       "required": ["id", "uid", "partnerId", "date", "amount", "createdAt"]
     }
